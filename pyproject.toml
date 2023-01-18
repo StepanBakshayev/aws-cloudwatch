@@ -1,0 +1,31 @@
+[tool]
+[tool.pdm]
+[tool.pdm.dev-dependencies]
+dev = [
+    "black>=22.12.0",
+    "isort>=5.11.4",
+]
+
+[project]
+name = ""
+version = ""
+description = ""
+authors = [
+    {name = "Stepan Bakshayev", email = "you@example.com"},
+]
+dependencies = [
+    "typer>=0.7.0",
+]
+requires-python = ">=3.11"
+license = {text = "GPL-3.0-only"}
+
+[tool.black]
+line-length = 120
+target-version = ['py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+indent = "4"
+atomic = true
+
