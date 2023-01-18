@@ -22,7 +22,10 @@ while True:
 ):
     client = docker.from_env()
     container = client.containers.run(docker_image, ["sh", "-c", bash_command], detach=True)
-    debug(container, container.id, container.logs())
+    debug(container, container.id)
+    for chunk in container.logs(stream=True):
+        pass
+
     import time
 
     time.sleep(5)
