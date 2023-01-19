@@ -21,6 +21,11 @@ Docker container would be stopped. AWS CloudWatch... I don't know what.
 Let me second try to consider gracefully handle errors. I could trace some errors to root of the programme options to
 show user a context.
 
+The main pain is AWS. It has so complicated restricted unreasonable
+`rules <https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/logs.html#CloudWatchLogs.Client.put_log_events>`_.
+There is error reporting addition to exception which is nonsense. I take care only for total size of messages and
+span of batch.
+
 
 Setup
 =====
