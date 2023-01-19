@@ -1,3 +1,5 @@
+from contextlib import ExitStack
+
 import docker
 import typer
 from devtools import debug
@@ -21,16 +23,11 @@ while True:
     # aws_region: str = typer.Option(...),
 ):
     client = docker.from_env()
-    container = client.containers.run(docker_image, ["sh", "-c", bash_command], detach=True)
-    debug(container, container.id)
-    for chunk in container.logs(stream=True):
-        pass
-
-    import time
-
-    time.sleep(5)
-    debug(container, container.id, container.logs())
-    container.stop()
+    with ExitStack() as stack:
+        container = client.containers.run(docker_image, ["sh", "-c", bash_command], detach=True)
+        stack.push(lambda exc_type, exc_value, traceback: (container.stop(timeout=1)) and False)
+        for chunk in container.logs(stream=True):
+            print(f"{chunk.decode('utf-8', errors='replace')!r}")
 
 
 if __name__ == "__main__":
