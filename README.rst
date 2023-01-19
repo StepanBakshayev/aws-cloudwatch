@@ -18,6 +18,9 @@ exceptions. In general, this is infinitive task, especially test task kind of ac
 in between two services. Limitation of implementation will be freeing and closing resources on any exception.
 Docker container would be stopped. AWS CloudWatch... I don't know what.
 
+Let me second try to consider gracefully handle errors. I could trace some errors to root of the programme options to
+show user a context.
+
 
 Setup
 =====

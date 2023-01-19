@@ -18,6 +18,7 @@ authors = [
 dependencies = [
     "typer>=0.7.0",
     "docker>=6.0.1",
+    "boto3[crt]>=1.26.52",
 ]
 requires-python = ">=3.11"
 license = {text = "GPL-3.0-only"}
