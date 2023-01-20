@@ -6,7 +6,8 @@ from io import BytesIO
 from itertools import chain
 from operator import itemgetter
 from queue import Empty, SimpleQueue
-from threading import Thread
+from signal import SIGINT, SIGTERM, Signals, getsignal, signal, sigtimedwait
+from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Iterator, NamedTuple
 
@@ -14,8 +15,6 @@ import boto3
 import docker
 import typer
 from botocore.config import Config
-from devtools import debug
-from toolz import partition_all
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,26 +24,30 @@ class Original(NamedTuple):
     message: bytes
 
 
-def collecting(client, pipe: SimpleQueue):
+def collecting(client, pipe: SimpleQueue, terminate: Event):
     stream = client.logs(stream=True)
     with closing(stream):
         for chunk in stream:
+            if terminate.is_set():
+                break
             # XXX: time.monotonic?
             pipe.put_nowait(Original(datetime.now(timezone.utc), chunk))
 
 
-class Event(NamedTuple):
+class LogEvent(NamedTuple):
     timestamp: int
     message: str
     memory: int
 
 
+# numbers are from https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/logs.html#CloudWatchLogs.Client.put_log_events
 MEMORY_BUDGET = 1_048_576
 MEMORY_ITEM_COST = 26
 MESSAGE_MAXIMUM_MEMORY = MEMORY_BUDGET - MEMORY_ITEM_COST
 FREQUENCY = 10  # in seconds, must be less than 24 hours.
 COUNT_BUDGET = 10_000
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 
 UTF8Reader = codecs.getreader("utf-8")
 
@@ -57,12 +60,11 @@ def aws_cloudwatch_log_split_by_budget(stream: bytes) -> Iterator[str]:
         yield chunk
 
 
-def transferring(client, group, stream, pipe: SimpleQueue, logger):
-    # numbers are from https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/logs.html#CloudWatchLogs.Client.put_log_events
-    batch: list[Event] = []
+def transferring(client, group, stream, pipe: SimpleQueue, terminate: Event, logger):
+    batch: list[LogEvent] = []
     last_beat = monotonic()
     memory = 0
-    while True:
+    while not terminate.is_set():
         try:
             raw: Original = pipe.get(timeout=FREQUENCY)
         except Empty:
@@ -72,7 +74,7 @@ def transferring(client, group, stream, pipe: SimpleQueue, logger):
             for chunk in aws_cloudwatch_log_split_by_budget(raw.message):
                 chunk_memory = len(chunk.encode("utf-8")) + MEMORY_ITEM_COST
                 memory += chunk_memory
-                batch.append(Event(timestamp, chunk, chunk_memory))
+                batch.append(LogEvent(timestamp, chunk, chunk_memory))
 
         if not batch:
             last_beat = monotonic()
@@ -167,20 +169,43 @@ while True:
             logger.info("AWS CloudWatch Logs stream %r is created.", aws_cloudwatch_stream)
 
         container = runner.containers.run(docker_image, ["sh", "-c", bash_command], detach=True)
-        stack.push(lambda exc_type, exc_value, traceback: (container.stop(timeout=1)) and False)
+        stack.push(lambda exc_type, exc_value, traceback: container.stop(timeout=1) and False)
         logger.info("Docker container %r id is started.", container.id)
 
         pipe = SimpleQueue()
-        collector = Thread(target=collecting, args=(container, pipe), daemon=True)
+        terminate = Event()
+        collector = Thread(target=collecting, args=(container, pipe, terminate), daemon=False)
         transporter = Thread(
-            target=transferring, args=(logs, aws_cloudwatch_group, aws_cloudwatch_stream, pipe, logger), daemon=True
+            target=transferring,
+            args=(logs, aws_cloudwatch_group, aws_cloudwatch_stream, pipe, terminate, logger),
+            daemon=False,
         )
 
+        def handler(signal):
+            logger.info("exiting by signal %r...", Signals(signal))
+            terminate.set()
+
+        signal(SIGINT, lambda si, st: handler(si))
+        signal(SIGTERM, lambda si, st: handler(si))
+
+        logger.info("Collector is started.")
         collector.start()
+        logger.info("Transporter is started.")
         transporter.start()
 
-        while collector.is_alive() and transporter.is_alive():
-            sleep(1)
+        try:
+            while collector.is_alive() and transporter.is_alive():
+                sleep(1)
+
+        finally:
+            terminate.set()
+            logger.info("Waiting collector to exit.")
+            collector.join(timeout=10)
+            logger.info("Waiting transporter to exit.")
+            transporter.join(timeout=10)
+            logger.info(
+                "Exit. Collector is alive %r. Transporter is alive %r.", collector.is_alive(), transporter.is_alive()
+            )
 
 
 if __name__ == "__main__":

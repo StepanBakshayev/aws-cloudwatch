@@ -37,6 +37,9 @@ The main pain is AWS. It has so complicated restricted unreasonable
 There is error reporting addition to exception which is nonsense. I take care only for total size of messages and
 span of batch.
 
+A concurrency model is threads. SDKs from booth sides are blocking. I expect modern CPython releases GIL for low-level
+io operations.
+
 Tests are excluded from the project. It is most API centric and data-transferring. I don't regret to skip tests
 this time. (I am lazy to bring up docker, aws, imagine some meaningfully command to run, dive deeper into AWS to use API
 to check appearance of log on it side).
