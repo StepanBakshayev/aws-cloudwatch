@@ -1,15 +1,110 @@
+import codecs
 import logging
 from contextlib import ExitStack, closing
+from datetime import datetime, timezone
+from io import BytesIO
 from itertools import chain
 from operator import itemgetter
+from queue import Empty, SimpleQueue
+from threading import Thread
+from time import monotonic, sleep
+from typing import Iterator, NamedTuple
 
 import boto3
 import docker
 import typer
 from botocore.config import Config
 from devtools import debug
+from toolz import partition_all
 
 logging.basicConfig(level=logging.INFO)
+
+
+class Original(NamedTuple):
+    timestamp: datetime
+    message: bytes
+
+
+def collecting(client, pipe: SimpleQueue):
+    stream = client.logs(stream=True)
+    with closing(stream):
+        for chunk in stream:
+            # XXX: time.monotonic?
+            pipe.put_nowait(Original(datetime.now(timezone.utc), chunk))
+
+
+class Event(NamedTuple):
+    timestamp: int
+    message: str
+    memory: int
+
+
+MEMORY_BUDGET = 1_048_576
+MEMORY_ITEM_COST = 26
+MESSAGE_MAXIMUM_MEMORY = MEMORY_BUDGET - MEMORY_ITEM_COST
+FREQUENCY = 10  # in seconds, must be less than 24 hours.
+COUNT_BUDGET = 10_000
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+UTF8Reader = codecs.getreader("utf-8")
+
+
+def aws_cloudwatch_log_split_by_budget(stream: bytes) -> Iterator[str]:
+    # XXX: this is insane. They limit by bytes, but accept str. Money doesn't smell for them.
+    # XXX: User's data is king for me.
+    reader = UTF8Reader(BytesIO(stream), errors="replace")
+    while chunk := reader.read(size=MESSAGE_MAXIMUM_MEMORY):
+        yield chunk
+
+
+def transferring(client, group, stream, pipe: SimpleQueue, logger):
+    # numbers are from https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/logs.html#CloudWatchLogs.Client.put_log_events
+    batch: list[Event] = []
+    last_beat = monotonic()
+    memory = 0
+    while True:
+        try:
+            raw: Original = pipe.get(timeout=FREQUENCY)
+        except Empty:
+            pass
+        else:
+            timestamp = int((raw.timestamp - EPOCH).total_seconds() * 1000)
+            for chunk in aws_cloudwatch_log_split_by_budget(raw.message):
+                chunk_memory = len(chunk.encode("utf-8")) + MEMORY_ITEM_COST
+                memory += chunk_memory
+                batch.append(Event(timestamp, chunk, chunk_memory))
+
+        if not batch:
+            last_beat = monotonic()
+            continue
+
+        beat_interval_exceeded = monotonic() - last_beat > FREQUENCY
+        count_exceeded = len(batch) >= COUNT_BUDGET
+        memory_exceeded = memory >= MEMORY_BUDGET
+        if beat_interval_exceeded or count_exceeded or memory_exceeded:
+            # XXX: how to handle backpressure situation?
+            drain_memory = 0
+            for i, e in enumerate(batch):
+                if i >= COUNT_BUDGET:
+                    break
+                drain_memory += e.memory
+                if drain_memory >= MEMORY_BUDGET:
+                    break
+            drain, batch = batch[:i], batch[i + 1 :]
+            response = client.put_log_events(
+                logGroupName=group,
+                logStreamName=stream,
+                logEvents=[{"timestamp": e.timestamp, "message": e.message} for e in drain],
+            )
+            last_beat = monotonic()
+            memory = 0
+            logger.info(
+                "Log sent. Count is %d. Memory is %d. Oversize is %d. Response is %r.",
+                len(drain),
+                drain_memory,
+                len(batch),
+                response,
+            )
 
 
 def main(
@@ -73,8 +168,19 @@ while True:
 
         container = runner.containers.run(docker_image, ["sh", "-c", bash_command], detach=True)
         stack.push(lambda exc_type, exc_value, traceback: (container.stop(timeout=1)) and False)
-        for chunk in container.logs(stream=True):
-            print(f"{chunk.decode('utf-8', errors='replace')!r}")
+        logger.info("Docker container %r id is started.", container.id)
+
+        pipe = SimpleQueue()
+        collector = Thread(target=collecting, args=(container, pipe), daemon=True)
+        transporter = Thread(
+            target=transferring, args=(logs, aws_cloudwatch_group, aws_cloudwatch_stream, pipe, logger), daemon=True
+        )
+
+        collector.start()
+        transporter.start()
+
+        while collector.is_alive() and transporter.is_alive():
+            sleep(1)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,23 @@
 AWS CloudWatch something
 ========================
 
+Abstract
+========
+
+The program transfers logs from docker to aws cloudwatch logs. The obstacles are restriction and design of services from
+well paid, from most famous companies, high qualified programmers from docker, amazon. The purpose of a test task is
+checking adoption, resource management, operating system aware, concurrency magic skills.
+
+
+Design
+======
+
 It is a python program, a docker, a AWS CloudWatch using. The purpose of the test task is defined by requirements.
 They are:
 
-  - The program should behave properly regardless of how much or what kind of logs the
-    container output
-  - The program should gracefully handle errors and interruptions
+- The program should behave properly regardless of how much or what kind of logs the
+container output
+- The program should gracefully handle errors and interruptions
 
 I don't see a trap (or hint) in logs. Amount would be issue (obstacles to handle) with subprocess interface
 (pipe-transport). I believe requests-transport-provider under docker sdk handles stream properly. Types of logs are
@@ -25,6 +36,10 @@ The main pain is AWS. It has so complicated restricted unreasonable
 `rules <https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/logs.html#CloudWatchLogs.Client.put_log_events>`_.
 There is error reporting addition to exception which is nonsense. I take care only for total size of messages and
 span of batch.
+
+Tests are excluded from the project. It is most API centric and data-transferring. I don't regret to skip tests
+this time. (I am lazy to bring up docker, aws, imagine some meaningfully command to run, dive deeper into AWS to use API
+to check appearance of log on it side).
 
 
 Setup
